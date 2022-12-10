@@ -1,0 +1,244 @@
+---
+title: "Data Analytics Assignment 7"
+author: "Shanthni Ravindrababu"
+header-includes:
+    - \usepackage{setspace}\doublespacing
+output:
+  pdf_document: default
+  html_document: default
+fontsize: 12pt
+---
+
+```{r setup, include=FALSE}
+# Required R package installation:
+# These will install packages if they are not already installed
+# Set the correct default repository
+r = getOption("repos")
+r["CRAN"] = "http://cran.rstudio.com"
+options(repos = r)
+
+if (!require("rmarkdown")) {
+  install.packages("rmarkdown")
+  library(rmarkdown)
+}
+if (!require("xfun")) {
+  install.packages("xfun")
+  library(xfun)
+}
+if (!require("knitr")) {
+  install.packages("knitr")
+  library(knitr)
+}
+if (!require("ggplot2")) {
+  install.packages("knitr")
+  library(knitr)
+}
+
+if (!require("kableExtra")) {
+  install.packages("kableExtra")
+  library(kableExtra)
+}
+
+if (!require("tm")) {
+  install.packages("tm")
+  library(kableExtra)
+}
+
+knitr::opts_chunk$set(echo = TRUE)
+
+source("Elasticsearch.R")
+```
+
+### Configure the search parameters here:
+
+Dates with 'low engagement': 
+2022-07-11 00:00:00 2022-07-18 00:00:00
+2022-07-18 00:00:00 2022-07-25 00:00:00
+2022-08-15 00:00:00 2022-08-22 00:00:00
+
+Dates with 'high engagement':
+2022-04-25 00:00:00 2022-05-02 00:00:00
+2022-05-09 00:00:00 2022-05-16 00:00:00
+2022-10-10 00:00:00 2022-10-17 00:00:00*
+
+```{r}
+
+# query start date/time (inclusive)
+rangestart <- "2022-10-10 00:00:00"
+
+# query end date/time (exclusive)
+rangeend <- "2022-10-17 00:00:00"
+
+# text filter restricts results to only those containing words, phrases, or meeting a boolean condition. This query syntax is very flexible and supports a wide variety of filter scenarios:
+# words: text_filter <- "cdc nih who"  ...contains "cdc" or "nih" or "who"
+# phrase: text_filter <- '"vitamin c"' ...contains exact phrase "vitamin c"
+# boolean condition: <- '(cdc nih who) +"vitamin c"' ...contains ("cdc" or "nih" or "who") and exact phrase "vitamin c"
+#full specification here: https://www.elastic.co/guide/en/elasticsearch/reference/current/query-dsl-simple-query-string-query.html
+text_filter <- ""
+
+# location filter acts like text filter except applied to the location of the tweet instead of its text body.
+location_filter <- ""
+
+# if FALSE, location filter considers both user-povided and geotagged locations. If TRUE, only geotagged locations are considered.
+must_have_geo <- FALSE
+
+# query semantic similarity phrase (choose one of these examples or enter your own)
+#semantic_phrase <- "Elementary school students are not coping well with distance learning."
+#semantic_phrase <- "I am diabetic and out of work because of coronavirus. I am worried I won't be able to get insulin without insurance."
+semantic_phrase <- ""
+
+# sentiment type (only 'vader' and 'roberta' are supported for now)
+# if the requested sentiment type is not available for the current index or sample, the sentiment
+# column in the result set will contain NA values.
+sentiment_type <- "roberta"
+
+# query lower bound for sentiment (inclusive). Enter a numeric value or for no lower bound set to NA.
+sentiment_lower <- NA
+
+# query upper bound for sentiment (inclusive). Enter a numeric value or for no upper bound set to NA.
+sentiment_upper <- NA
+
+# embedding type (only 'use_large' and 'sbert' are supported for now)
+embedding_type <- "sbert"
+
+# return results in chronological order or as a random sample within the range
+# (ignored if semantic_phrase is not blank)
+random_sample <- TRUE
+
+random_seed <- NA
+
+# number of results to return (to return all results, set to NA)
+resultsize <- 2000
+
+# minimum number of results to return. This should be set according to the needs of the analysis (i.e. enough samples for statistical significance)
+min_results <- 500
+
+```
+
+
+
+### Results:
+
+```{r, echo=FALSE}
+results <- do_search(indexname="ukraine-data-lite-oct22",
+                     rangestart=rangestart,
+                     rangeend=rangeend,
+                     text_filter=text_filter,
+                     location_filter=location_filter,
+                     must_have_geo=must_have_geo,
+                     embedding_type=embedding_type,
+                     must_have_embedding=TRUE,
+                     semantic_phrase = semantic_phrase,
+                     sentiment_upper = sentiment_upper,
+                     sentiment_lower = sentiment_lower,
+                     random_sample=random_sample,
+                     random_seed=random_seed,
+                     resultsize=resultsize,
+                     resultfields='"created_at", "user.screen_name", "user.location", "place.full_name", "place.country", "text", "full_text", "extended_tweet.full_text, aspects"',
+                     elasticsearch_host="lp01.idea.rpi.edu",
+                     elasticsearch_path="elasticsearch",
+                     elasticsearch_port=443,
+                     elasticsearch_schema="https")
+
+required_fields <- c("created_at", "user_screen_name", "user_location", "place.full_name", "place.country", "full_text")
+validate_results(results$df, min_results, required_fields)
+
+
+#Transform results for sentiment plot
+results.df <- results$df
+results.df$vector_type <- "tweet"
+
+
+```
+
+
+```{r}
+full_text <- results.df$full_text
+
+## TEXT MINING
+
+corpus = tm::Corpus(tm::VectorSource(full_text))
+corpus <- tm::tm_map(corpus, tm::removeWords, tm::stopwords(''))
+corpus <- tm::tm_map(corpus, tm::stemDocument, language = "english")
+corpus <- tm::tm_map(corpus, tm::stripWhitespace)
+
+for (i in 1:length(corpus)) {
+  corpus[[i]]$content <- gsub('@','',corpus[[i]]$content)
+  corpus[[i]]$content <- gsub('#','',corpus[[i]]$content)
+  corpus[[i]]$content <- gsub('http','',corpus[[i]]$content)
+  corpus[[i]]$content <- gsub('.com','',corpus[[i]]$content)
+}
+```
+
+
+```{r}
+
+# Building the feature matrices
+tdm <- tm::DocumentTermMatrix(corpus)
+tdm.tfidf <- tm::weightTfIdf(tdm)
+
+tdm.tfidf <- tm::removeSparseTerms(tdm.tfidf, 0.999)
+
+tfidf.matrix <- as.matrix(tdm.tfidf)
+dist.matrix = proxy::dist(tfidf.matrix, method = "cosine")
+
+points <- cmdscale(dist.matrix, k = 2) # Running the PCA
+
+results.k <- results.df
+results.k$x <- points[,1]
+results.k$y <- points[,2]
+
+IQRx <- quantile(results.k$x, .75) - quantile(results.k$x, .25)
+upperx <- quantile(results.k$x, .75) + 1.5*IQRx
+lowerx <- quantile(results.k$x,.25) - 1.5*IQRx
+
+results.k <- results.k[results.k$x < upperx & results.k$x > lowerx,]
+
+IQRy <- quantile(results.k$y, .75) - quantile(results.k$y, .25)
+uppery <- quantile(results.k$y, .75) + 1.5*IQRy
+lowery <- quantile(results.k$y,.25) - 1.5*IQRy
+
+results.k <- results.k[results.k$y < uppery & results.k$y > lowery,]
+
+
+```
+
+
+```{r}
+
+clustering.kmeans <- kmeans(subset(results.k, select=c(x,y)), 3)
+results.k$cluster <- clustering.kmeans$cluster
+
+ggplot(data=results.k, aes(x=x, y=y,color=as.factor(cluster))) +
+geom_point() +
+scale_fill_manual(values=c('1' = 'blue',
+                           '2' = 'green',
+                           '3' = 'purple')) 
+
+ggplot(results.k, aes(x = as.factor(cluster))) + geom_bar()
+
+
+sample <- subset(results.k[sample(nrow(results.k), 200), ], select=c(full_text,cluster))
+saveRDS(sample, file = 'sample10-10.rds')
+
+
+```
+
+
+```{r}
+#Elbow Method for finding the optimal number of clusters
+set.seed(123)
+# Compute and plot wss for k = 2 to k = 15.
+k.max <- 15 
+data <- subset(results.k, select=c(x,y))
+wss <- sapply(1:k.max, 
+              function(k){kmeans(data, k, nstart=50,iter.max = 15 )$tot.withinss})
+
+plot(1:k.max, wss,
+     type="b", pch = 19, frame = FALSE, 
+     xlab="Number of clusters K",
+     ylab="Total within-clusters sum of squares")
+
+
+
+```

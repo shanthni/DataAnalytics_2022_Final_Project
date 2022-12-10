@@ -1,0 +1,439 @@
+---
+title: "Data Analytics Assignment 7"
+author: "Shanthni Ravindrababu"
+header-includes:
+    - \usepackage{setspace}\doublespacing
+output:
+  pdf_document: default
+  html_document: default
+fontsize: 12pt
+---
+
+```{r setup, include=FALSE}
+# Required R package installation:
+# These will install packages if they are not already installed
+# Set the correct default repository
+r = getOption("repos")
+r["CRAN"] = "http://cran.rstudio.com"
+options(repos = r)
+
+if (!require("rmarkdown")) {
+  install.packages("rmarkdown")
+  library(rmarkdown)
+}
+if (!require("xfun")) {
+  install.packages("xfun")
+  library(xfun)
+}
+if (!require("knitr")) {
+  install.packages("knitr")
+  library(knitr)
+}
+if (!require("ggplot2")) {
+  install.packages("knitr")
+  library(knitr)
+}
+
+if (!require("kableExtra")) {
+  install.packages("kableExtra")
+  library(kableExtra)
+}
+
+if (!require("tm")) {
+  install.packages("tm")
+  library(kableExtra)
+}
+
+knitr::opts_chunk$set(echo = TRUE)
+
+source("Elasticsearch.R")
+```
+
+### Configure the search parameters here:
+
+Dates with 'low engagement': 
+2022-07-11 00:00:00 2022-07-18 00:00:00
+2022-07-18 00:00:00 2022-07-25 00:00:00
+2022-08-15 00:00:00 2022-08-22 00:00:00
+
+Dates with 'high engagement':
+2022-04-25 00:00:00 2022-05-02 00:00:00
+2022-05-09 00:00:00 2022-05-16 00:00:00
+2022-10-10 00:00:00 2022-10-17 00:00:00*
+
+```{r}
+
+# query start date/time (inclusive)
+rangestart <- "2022-04-05 00:00:00"
+
+# query end date/time (exclusive)
+rangeend <- "2022-11-05 00:00:00"
+
+# text filter restricts results to only those containing words, phrases, or meeting a boolean condition. This query syntax is very flexible and supports a wide variety of filter scenarios:
+# words: text_filter <- "cdc nih who"  ...contains "cdc" or "nih" or "who"
+# phrase: text_filter <- '"vitamin c"' ...contains exact phrase "vitamin c"
+# boolean condition: <- '(cdc nih who) +"vitamin c"' ...contains ("cdc" or "nih" or "who") and exact phrase "vitamin c"
+#full specification here: https://www.elastic.co/guide/en/elasticsearch/reference/current/query-dsl-simple-query-string-query.html
+text_filter <- ""
+
+# location filter acts like text filter except applied to the location of the tweet instead of its text body.
+location_filter <- ""
+
+# if FALSE, location filter considers both user-povided and geotagged locations. If TRUE, only geotagged locations are considered.
+must_have_geo <- FALSE
+
+# query semantic similarity phrase (choose one of these examples or enter your own)
+#semantic_phrase <- "Elementary school students are not coping well with distance learning."
+#semantic_phrase <- "I am diabetic and out of work because of coronavirus. I am worried I won't be able to get insulin without insurance."
+semantic_phrase <- "Russia"
+
+# sentiment type (only 'vader' and 'roberta' are supported for now)
+# if the requested sentiment type is not available for the current index or sample, the sentiment
+# column in the result set will contain NA values.
+sentiment_type <- "roberta"
+
+# query lower bound for sentiment (inclusive). Enter a numeric value or for no lower bound set to NA.
+sentiment_lower <- NA
+
+# query upper bound for sentiment (inclusive). Enter a numeric value or for no upper bound set to NA.
+sentiment_upper <- NA
+
+# embedding type (only 'use_large' and 'sbert' are supported for now)
+embedding_type <- "sbert"
+
+# return results in chronological order or as a random sample within the range
+# (ignored if semantic_phrase is not blank)
+random_sample <- TRUE
+
+random_seed <- NA
+
+# number of results to return (to return all results, set to NA)
+resultsize <- 2000
+
+# minimum number of results to return. This should be set according to the needs of the analysis (i.e. enough samples for statistical significance)
+min_results <- 500
+
+```
+
+
+
+### Results:
+
+```{r, echo=FALSE}
+results <- do_search(indexname="ukraine-data-lite-oct22",
+                     rangestart=rangestart,
+                     rangeend=rangeend,
+                     text_filter=text_filter,
+                     location_filter=location_filter,
+                     must_have_geo=must_have_geo,
+                     embedding_type=embedding_type,
+                     must_have_embedding=TRUE,
+                     semantic_phrase = "Russia",
+                     sentiment_upper = sentiment_upper,
+                     sentiment_lower = sentiment_lower,
+                     random_sample=random_sample,
+                     random_seed=random_seed,
+                     resultsize=resultsize,
+                     resultfields='"created_at", "user.screen_name", "user.location", "place.full_name", "place.country", "text", "full_text", "extended_tweet.full_text, aspects"',
+                     elasticsearch_host="lp01.idea.rpi.edu",
+                     elasticsearch_path="elasticsearch",
+                     elasticsearch_port=443,
+                     elasticsearch_schema="https")
+
+required_fields <- c("created_at", "user_screen_name", "user_location", "place.full_name", "place.country", "full_text")
+validate_results(results$df, min_results, required_fields)
+
+
+#Transform results for sentiment plot
+results.df <- results$df
+results.df$vector_type <- "tweet"
+
+#Transform results for sentiment plot
+results.df <- results$df
+results.df$vector_type <- "tweet"
+
+#Transform results for tweet display
+display.df <- results.df
+display.df$user_location <- ifelse(is.na(display.df$place.full_name), display.df$user_location, paste(display.df$place.full_name, display.df$place.country, sep=", "))
+display.df$user_location[is.na(display.df$user_location)] <- ""
+display.df$user_location_type <- ifelse(is.na(display.df$place.full_name), "User", "Place")
+display_fields <- c("full_text", "created_at", "user_screen_name", "user_location", "user_location_type", "sentiment")
+if (semantic_phrase != "") {
+  display_fields <- c("cosine_similarity", display_fields)
+}
+
+#print results
+params.df <- data.frame(from=results$params$rangestart, 
+                        to=results$params$rangeend,
+                        text.filter=results$params$text_filter,
+                        location.filter=results$params$location_filter,
+                        phrase=results$params$semantic_phrase,
+                        geo_only=results$params$must_have_geo,
+                        results.count=paste(nrow(results$df), "/", results$total))
+kable(params.df) %>% kable_styling()
+
+#show sentiment plots
+#plot_tweet_sentiment_timeseries(results.df, group.by="week")
+
+#print up to 100 tweets
+#kable(display.df[1:min(100, nrow(display.df)),]) %>% kable_styling()
+
+hist(results.df$cosine_similarity, breaks = 100)
+boxplot(results.df$cosine_similarity)
+
+IQR <- IQR(as.numeric(results.df$cosine_similarity))
+upper <- quantile(results.df$cosine_similarity, 0.75) + 1.5*IQR
+lower <- quantile(results.df$cosine_similarity, 0.25) - 1.5*IQR
+
+summary(results.df$cosine_similarity)
+
+nrow(results.df[results.df$cosine_similarity > upper | results.df$cosine_similarity < lower,])
+upper
+lower
+
+
+```
+
+```{r, echo=FALSE}
+results <- do_search(indexname="ukraine-data-lite-oct22",
+                     rangestart=rangestart,
+                     rangeend=rangeend,
+                     text_filter=text_filter,
+                     location_filter=location_filter,
+                     must_have_geo=must_have_geo,
+                     embedding_type=embedding_type,
+                     must_have_embedding=TRUE,
+                     semantic_phrase = "Ukraine",
+                     sentiment_upper = sentiment_upper,
+                     sentiment_lower = sentiment_lower,
+                     random_sample=random_sample,
+                     random_seed=random_seed,
+                     resultsize=resultsize,
+                     resultfields='"created_at", "user.screen_name", "user.location", "place.full_name", "place.country", "text", "full_text", "extended_tweet.full_text, aspects"',
+                     elasticsearch_host="lp01.idea.rpi.edu",
+                     elasticsearch_path="elasticsearch",
+                     elasticsearch_port=443,
+                     elasticsearch_schema="https")
+
+required_fields <- c("created_at", "user_screen_name", "user_location", "place.full_name", "place.country", "full_text")
+validate_results(results$df, min_results, required_fields)
+
+
+#Transform results for sentiment plot
+results.df <- results$df
+results.df$vector_type <- "tweet"
+
+#Transform results for sentiment plot
+results.df <- results$df
+results.df$vector_type <- "tweet"
+
+#Transform results for tweet display
+display.df <- results.df
+display.df$user_location <- ifelse(is.na(display.df$place.full_name), display.df$user_location, paste(display.df$place.full_name, display.df$place.country, sep=", "))
+display.df$user_location[is.na(display.df$user_location)] <- ""
+display.df$user_location_type <- ifelse(is.na(display.df$place.full_name), "User", "Place")
+display_fields <- c("full_text", "created_at", "user_screen_name", "user_location", "user_location_type", "sentiment")
+if (semantic_phrase != "") {
+  display_fields <- c("cosine_similarity", display_fields)
+}
+
+#print results
+params.df <- data.frame(from=results$params$rangestart, 
+                        to=results$params$rangeend,
+                        text.filter=results$params$text_filter,
+                        location.filter=results$params$location_filter,
+                        phrase=results$params$semantic_phrase,
+                        geo_only=results$params$must_have_geo,
+                        results.count=paste(nrow(results$df), "/", results$total))
+kable(params.df) %>% kable_styling()
+
+#show sentiment plots
+#plot_tweet_sentiment_timeseries(results.df, group.by="week")
+
+#print up to 100 tweets
+#kable(display.df[1:min(100, nrow(display.df)),]) %>% kable_styling()
+
+hist(results.df$cosine_similarity, breaks = 100)
+boxplot(results.df$cosine_similarity)
+
+IQR <- IQR(as.numeric(results.df$cosine_similarity))
+upper <- quantile(results.df$cosine_similarity, 0.75) + 1.5*IQR
+lower <- quantile(results.df$cosine_similarity, 0.25) - 1.5*IQR
+
+summary(results.df$cosine_similarity)
+
+nrow(results.df[results.df$cosine_similarity > upper | results.df$cosine_similarity < lower,])
+upper
+lower
+
+
+```
+
+```{r, echo=FALSE}
+results <- do_search(indexname="ukraine-data-lite-oct22",
+                     rangestart=rangestart,
+                     rangeend=rangeend,
+                     text_filter=text_filter,
+                     location_filter=location_filter,
+                     must_have_geo=must_have_geo,
+                     embedding_type=embedding_type,
+                     must_have_embedding=TRUE,
+                     semantic_phrase = "Russian propaganda",
+                     sentiment_upper = sentiment_upper,
+                     sentiment_lower = sentiment_lower,
+                     random_sample=random_sample,
+                     random_seed=random_seed,
+                     resultsize=resultsize,
+                     resultfields='"created_at", "user.screen_name", "user.location", "place.full_name", "place.country", "text", "full_text", "extended_tweet.full_text, aspects"',
+                     elasticsearch_host="lp01.idea.rpi.edu",
+                     elasticsearch_path="elasticsearch",
+                     elasticsearch_port=443,
+                     elasticsearch_schema="https")
+
+required_fields <- c("created_at", "user_screen_name", "user_location", "place.full_name", "place.country", "full_text")
+validate_results(results$df, min_results, required_fields)
+
+
+#Transform results for sentiment plot
+results.df <- results$df
+results.df$vector_type <- "tweet"
+
+#Transform results for sentiment plot
+results.df <- results$df
+results.df$vector_type <- "tweet"
+
+#Transform results for tweet display
+display.df <- results.df
+display.df$user_location <- ifelse(is.na(display.df$place.full_name), display.df$user_location, paste(display.df$place.full_name, display.df$place.country, sep=", "))
+display.df$user_location[is.na(display.df$user_location)] <- ""
+display.df$user_location_type <- ifelse(is.na(display.df$place.full_name), "User", "Place")
+display_fields <- c("full_text", "created_at", "user_screen_name", "user_location", "user_location_type", "sentiment")
+if (semantic_phrase != "") {
+  display_fields <- c("cosine_similarity", display_fields)
+}
+
+#print results
+params.df <- data.frame(from=results$params$rangestart, 
+                        to=results$params$rangeend,
+                        text.filter=results$params$text_filter,
+                        location.filter=results$params$location_filter,
+                        phrase=results$params$semantic_phrase,
+                        geo_only=results$params$must_have_geo,
+                        results.count=paste(nrow(results$df), "/", results$total))
+kable(params.df) %>% kable_styling()
+
+#show sentiment plots
+#plot_tweet_sentiment_timeseries(results.df, group.by="week")
+
+#print up to 100 tweets
+#kable(display.df[1:min(100, nrow(display.df)),]) %>% kable_styling()
+
+hist(results.df$cosine_similarity, breaks = 100)
+boxplot(results.df$cosine_similarity)
+
+summary(results.df$cosine_similarity)
+
+IQR <- IQR(as.numeric(results.df$cosine_similarity))
+upper <- quantile(results.df$cosine_similarity, 0.75) + 1.5*IQR
+lower <- quantile(results.df$cosine_similarity, 0.25) - 1.5*IQR
+
+nrow(results.df[results.df$cosine_similarity > upper | results.df$cosine_similarity < lower,])
+upper
+lower
+
+
+```
+```{r, echo=FALSE}
+results <- do_search(indexname="ukraine-data-lite-oct22",
+                     rangestart=rangestart,
+                     rangeend=rangeend,
+                     text_filter=text_filter,
+                     location_filter=location_filter,
+                     must_have_geo=must_have_geo,
+                     embedding_type=embedding_type,
+                     must_have_embedding=TRUE,
+                     semantic_phrase = "Ukraine deaths",
+                     sentiment_upper = sentiment_upper,
+                     sentiment_lower = sentiment_lower,
+                     random_sample=random_sample,
+                     random_seed=random_seed,
+                     resultsize=resultsize,
+                     resultfields='"created_at", "user.screen_name", "user.location", "place.full_name", "place.country", "text", "full_text", "extended_tweet.full_text, aspects"',
+                     elasticsearch_host="lp01.idea.rpi.edu",
+                     elasticsearch_path="elasticsearch",
+                     elasticsearch_port=443,
+                     elasticsearch_schema="https")
+
+required_fields <- c("created_at", "user_screen_name", "user_location", "place.full_name", "place.country", "full_text")
+validate_results(results$df, min_results, required_fields)
+
+
+#Transform results for sentiment plot
+results.df <- results$df
+results.df$vector_type <- "tweet"
+
+#Transform results for sentiment plot
+results.df <- results$df
+results.df$vector_type <- "tweet"
+
+#Transform results for tweet display
+display.df <- results.df
+display.df$user_location <- ifelse(is.na(display.df$place.full_name), display.df$user_location, paste(display.df$place.full_name, display.df$place.country, sep=", "))
+display.df$user_location[is.na(display.df$user_location)] <- ""
+display.df$user_location_type <- ifelse(is.na(display.df$place.full_name), "User", "Place")
+display_fields <- c("full_text", "created_at", "user_screen_name", "user_location", "user_location_type", "sentiment")
+if (semantic_phrase != "") {
+  display_fields <- c("cosine_similarity", display_fields)
+}
+
+#print results
+params.df <- data.frame(from=results$params$rangestart, 
+                        to=results$params$rangeend,
+                        text.filter=results$params$text_filter,
+                        location.filter=results$params$location_filter,
+                        phrase=results$params$semantic_phrase,
+                        geo_only=results$params$must_have_geo,
+                        results.count=paste(nrow(results$df), "/", results$total))
+kable(params.df) %>% kable_styling()
+
+#show sentiment plots
+#plot_tweet_sentiment_timeseries(results.df, group.by="week")
+
+#print up to 100 tweets
+#kable(display.df[1:min(100, nrow(display.df)),]) %>% kable_styling()
+
+hist(results.df$cosine_similarity, breaks = 100)
+boxplot(results.df$cosine_similarity)
+
+summary(results.df$cosine_similarity)
+
+IQR <- IQR(as.numeric(results.df$cosine_similarity))
+upper <- quantile(results.df$cosine_similarity, 0.75) + 1.5*IQR
+lower <- quantile(results.df$cosine_similarity, 0.25) - 1.5*IQR
+
+nrow(results.df[results.df$cosine_similarity > upper | results.df$cosine_similarity < lower,])
+upper
+lower
+
+```
+
+```{r}
+
+counts_by_week <- data.frame(week=c('2022-4-25', '2022-05-02', '2022-05-09', '2022-05-16', '2022-05-23', '2022-06-27', '2022-07-04', '2022-07-11', '2022-07-18', '2022-07-25', '2022-08-08', '2022-08-22', '2022-08-29',  '2022-09-05', '2022-09-12','2022-09-19', '2022-09-26', '2022-10-03', '2022-10-10' ), 
+                                counts=c(12026656, 10232844, 12644328, 9672732,  7459134, 7157492, 6190819, 5797762, 6003003, 6374005, 6231173, 6631509, 6517886, 8312735, 8434656, 9022942, 10488340, 11525003, 12036798))
+
+hist(counts_by_week$counts, breaks = 10)
+boxplot(counts_by_week$counts)
+
+summary(counts_by_week$counts)
+
+IQR <- IQR(as.numeric(counts_by_week$counts))
+upper <- quantile(counts_by_week$counts, 0.75) + 1.5*IQR
+lower <- quantile(counts_by_week$counts, 0.25) - 1.5*IQR
+
+nrow(counts_by_week[counts_by_week$counts > upper | counts_by_week$counts < lower,])
+upper
+lower
+
+
+```
